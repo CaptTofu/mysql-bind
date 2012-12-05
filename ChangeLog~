@@ -1,0 +1,5 @@
+Wed Mar 03 2004 Robert Prouse  <rob-mysqlbind@prouse.org>
+        * Preparing for public release
+	* Added ChangeLog and COPYING
+	* Changed licence to GPL
+	* Improved documentation on installation
