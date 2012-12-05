@@ -38,7 +38,8 @@
 
 #include <named/globals.h>
 
-#include <named/mysqldb.h>
+/* #include <named/mysqldb.h> */
+#include "include/mysqldb.h"
 
 /*
  * This file is a modification of the PostGreSQL version which is distributed
@@ -51,31 +52,38 @@
  * It opens one connection to the database per zone, which is inefficient.  
  * It also may not handle quoting correctly.
  *
- * The table must contain the fields "name", "rdtype", and "rdata", and 
+ * The table must contain the fields "name", "type", and "data", and 
  * is expected to contain a properly constructed zone.  
+ *
+ * The column domain_id is a unique identifyer for a domain, in this case a UUID
  *
  * Example SQL to create a domain
  * ==============================
  *
  * CREATE TABLE mydomain (
+ *  id int unsigned not null auto_increment,
+ *  domain_id char(32) NOT NULL default '',
  *  name varchar(255) default NULL,
  *  ttl int(11) default NULL,
- *  rdtype varchar(255) default NULL,
- *  rdata varchar(255) default NULL
- * ) TYPE=MyISAM;
+ *  type varchar(255) default NULL,
+ *  data varchar(255) default NULL,
+ *  primary key (id),
+ *  key domain_id (domain_id),
+ *  key name (name)
+ * ) TYPE=InnoDB;
  * 
- * INSERT INTO mydomain VALUES ('mydomain.com', 259200, 'SOA', 'mydomain.com. www.mydomain.com. 200309181 28800 7200 86400 28800');
- * INSERT INTO mydomain VALUES ('mydomain.com', 259200, 'NS', 'ns0.mydomain.com.');
- * INSERT INTO mydomain VALUES ('mydomain.com', 259200, 'NS', 'ns1.mydomain.com.');
- * INSERT INTO mydomain VALUES ('mydomain.com', 259200, 'MX', '10 mail.mydomain.com.');
- * INSERT INTO mydomain VALUES ('w0.mydomain.com', 259200, 'A', '192.168.1.1');
- * INSERT INTO mydomain VALUES ('w1.mydomain.com', 259200, 'A', '192.168.1.2');
- * INSERT INTO mydomain VALUES ('mydomain.com', 259200, 'Cname', 'w0.mydomain.com.');
- * INSERT INTO mydomain VALUES ('mail.mydomain.com', 259200, 'Cname', 'w0.mydomain.com.');
- * INSERT INTO mydomain VALUES ('ns0.mydomain.com', 259200, 'Cname', 'w0.mydomain.com.');
- * INSERT INTO mydomain VALUES ('ns1.mydomain.com', 259200, 'Cname', 'w1.mydomain.com.');
- * INSERT INTO mydomain VALUES ('www.mydomain.com', 259200, 'Cname', 'w0.mydomain.com.');
- * INSERT INTO mydomain VALUES ('ftp.mydomain.com', 259200, 'Cname', 'w0.mydomain.com.');
+ * INSERT INTO mydomain (domain_id, name, ttl, type, data) VALUES ('5f7b75e1-8a25-49a5-8ba0-e2efe53aebed','mydomain.com', 259200, 'SOA', 'mydomain.com. www.mydomain.com. 200309181 28800 7200 86400 28800');
+ * INSERT INTO mydomain(domain_id, name, ttl, type, data) VALUES ('5f7b75e1-8a25-49a5-8ba0-e2efe53aebed','mydomain.com', 259200, 'NS', 'ns0.mydomain.com.');
+ * INSERT INTO mydomain(domain_id, name, ttl, type, data) VALUES ('5f7b75e1-8a25-49a5-8ba0-e2efe53aebed','mydomain.com', 259200, 'NS', 'ns1.mydomain.com.');
+ * INSERT INTO mydomain(domain_id, name, ttl, type, data) VALUES ('5f7b75e1-8a25-49a5-8ba0-e2efe53aebed','mydomain.com', 259200, 'MX', '10 mail.mydomain.com.');
+ * INSERT INTO mydomain(domain_id, name, ttl, type, data) VALUES ('5f7b75e1-8a25-49a5-8ba0-e2efe53aebed','w0.mydomain.com', 259200, 'A', '192.168.1.1');
+ * INSERT INTO mydomain(domain_id, name, ttl, type, data) VALUES ('5f7b75e1-8a25-49a5-8ba0-e2efe53aebed','w1.mydomain.com', 259200, 'A', '192.168.1.2');
+ * INSERT INTO mydomain(domain_id, name, ttl, type, data) VALUES ('5f7b75e1-8a25-49a5-8ba0-e2efe53aebed','mydomain.com', 259200, 'Cname', 'w0.mydomain.com.');
+ * INSERT INTO mydomain(domain_id, name, ttl, type, data) VALUES ('5f7b75e1-8a25-49a5-8ba0-e2efe53aebed','mail.mydomain.com', 259200, 'Cname', 'w0.mydomain.com.');
+ * INSERT INTO mydomain(domain_id, name, ttl, type, data) VALUES ('5f7b75e1-8a25-49a5-8ba0-e2efe53aebed','ns0.mydomain.com', 259200, 'Cname', 'w0.mydomain.com.');
+ * INSERT INTO mydomain(domain_id, name, ttl, type, data) VALUES ('5f7b75e1-8a25-49a5-8ba0-e2efe53aebed','ns1.mydomain.com', 259200, 'Cname', 'w1.mydomain.com.');
+ * INSERT INTO mydomain(domain_id, name, ttl, type, data) VALUES ('5f7b75e1-8a25-49a5-8ba0-e2efe53aebed','www.mydomain.com', 259200, 'Cname', 'w0.mydomain.com.');
+ * INSERT INTO mydomain(domain_id, name, ttl, type, data) VALUES ('5f7b75e1-8a25-49a5-8ba0-e2efe53aebed','ftp.mydomain.com', 259200, 'Cname', 'w0.mydomain.com.');
  *
  * Example entry in named.conf
  * ===========================
@@ -83,7 +91,7 @@
  * zone "mydomain.com" {
  *	type master;
  *	notify no;
- *	database "mysqldb dbname tablename hostname user password";
+ *	database "mysqldb dbname tablename hostname user password domain_id";
  * };
  *
  * Rebuilding the Server (modified from bind9/doc/misc/sdb)
@@ -119,6 +127,8 @@ struct dbinfo
     char *host;
     char *user;
     char *passwd;
+    char *domain_id;
+    char *tenant_id;
 };
 
 static void mysqldb_destroy(const char *zone, void *driverdata, void **dbdata);
@@ -223,7 +233,12 @@ static isc_result_t mysqldb_lookup(const char *zone, const char *name, void *dbd
     //if (canonname == NULL)
     	//return (ISC_R_NOMEMORY);
     //quotestring(name, canonname);
-    snprintf(str, sizeof(str),"SELECT ttl, rdtype, rdata FROM %s WHERE UPPER(name) = UPPER('%s') ", dbi->table, name);
+    snprintf(str, sizeof(str),
+             "SELECT ttl, type, data FROM %s WHERE tenant_id = '%s' AND domain_id = '%s' AND name = UPPER('%s') ",
+             dbi->table,
+             dbi->tenant_id,
+             dbi->domain_id,
+             name);
     //isc_mem_put(ns_g_mctx, canonname, strlen(name) * 2 + 1);
 
     result = maybe_reconnect(dbi);
@@ -249,7 +264,12 @@ static isc_result_t mysqldb_lookup(const char *zone, const char *name, void *dbd
 
             mysql_free_result(res);
 
-            snprintf(str, sizeof(str), "SELECT ttl, rdtype, rdata FROM %s WHERE UPPER(name) = UPPER('*.%s') ",dbi->table, domain);
+            snprintf(str, sizeof(str),
+                     "SELECT ttl, type, data FROM %s WHERE tenant_id = '%s' AND domain_id = '%s' AND name = UPPER('*.%s')",
+                     dbi->table,
+                     dbi->tenant_id,
+                     dbi->domain_id,
+                     domain);
 
             result = maybe_reconnect(dbi);
             if (result != ISC_R_SUCCESS)
@@ -305,8 +325,10 @@ static isc_result_t mysqldb_allnodes(const char *zone, void *dbdata, dns_sdballn
     UNUSED(zone);
 
     snprintf(str, sizeof(str),
-	 "SELECT ttl, name, rdtype, rdata FROM %s ORDER BY name",
-	 dbi->table);
+	"SELECT ttl, name, type, data FROM %s WHERE tenant_id = '%s' AND domain_id = '%s' ORDER BY name",
+    dbi->table,
+    dbi->tenant_id,
+	dbi->domain_id);
 
     result = maybe_reconnect(dbi);
     if (result != ISC_R_SUCCESS)
@@ -327,23 +349,23 @@ static isc_result_t mysqldb_allnodes(const char *zone, void *dbdata, dns_sdballn
     while ((row = mysql_fetch_row(res)))
     {
     	char *ttlstr = row[0];
-	char *name   = row[1];
+	    char *name   = row[1];
     	char *type   = row[2];
     	char *data   = row[3];
-	dns_ttl_t ttl;
-	char *endp;
-	ttl = strtol(ttlstr, &endp, 10);
-	if (*endp != '\0')
+	    dns_ttl_t ttl;
+	    char *endp;
+	    ttl = strtol(ttlstr, &endp, 10);
+	    if (*endp != '\0')
         {
             mysql_free_result(res);
             return (DNS_R_BADTTL);
-	}
-	result = dns_sdb_putnamedrr(allnodes, name, type, ttl, data);
-	if (result != ISC_R_SUCCESS)
+	    }
+	    result = dns_sdb_putnamedrr(allnodes, name, type, ttl, data);
+	    if (result != ISC_R_SUCCESS)
         {
             mysql_free_result(res);
             return (ISC_R_FAILURE);
-	}
+	    }
     }   
     mysql_free_result(res);
     return (ISC_R_SUCCESS);
@@ -358,6 +380,8 @@ static isc_result_t mysqldb_allnodes(const char *zone, void *dbdata, dns_sdballn
  * argv[2] (if present) is the name of the host to connect to
  * argv[3] (if present) is the name of the user to connect as
  * argv[4] (if present) is the name of the password to connect with
+ * argv[5] (if present) is the domain_id, column specifying zone name (not record name) in the table 
+ * argv[6] (if present) is the tenant_id, column specifying owner of records in the table 
  */
 static isc_result_t mysqldb_create(const char *zone, int argc, char **argv,
 	                           void *driverdata, void **dbdata)
@@ -375,11 +399,13 @@ static isc_result_t mysqldb_create(const char *zone, int argc, char **argv,
     if (dbi == NULL)
         return (ISC_R_NOMEMORY);
         
-    dbi->database = NULL;
-    dbi->table    = NULL;
-    dbi->host     = NULL;
-    dbi->user     = NULL;
-    dbi->passwd   = NULL;
+    dbi->database  = NULL;
+    dbi->table     = NULL;
+    dbi->host      = NULL;
+    dbi->user      = NULL;
+    dbi->passwd    = NULL;
+    dbi->domain_id = NULL;
+    dbi->tenant_id = NULL;
 
 #define STRDUP_OR_FAIL(target, source)			\
     do                                                  \
@@ -392,11 +418,18 @@ static isc_result_t mysqldb_create(const char *zone, int argc, char **argv,
 	}						\
     } while (0);
 
-    STRDUP_OR_FAIL(dbi->database, argv[0]);
-    STRDUP_OR_FAIL(dbi->table,    argv[1]);
-    STRDUP_OR_FAIL(dbi->host,     argv[2]);
-    STRDUP_OR_FAIL(dbi->user,     argv[3]);
-    STRDUP_OR_FAIL(dbi->passwd,   argv[4]);
+    STRDUP_OR_FAIL(dbi->database,  argv[0]);
+    STRDUP_OR_FAIL(dbi->table,     argv[1]);
+    if (argc > 2)
+        STRDUP_OR_FAIL(dbi->host, argv[2]);
+    if (argc > 3)
+        STRDUP_OR_FAIL(dbi->user, argv[3]);
+    if (argc > 4)
+        STRDUP_OR_FAIL(dbi->passwd, argv[4]);
+    if (argc > 5)
+        STRDUP_OR_FAIL(dbi->domain_id, argv[5]);
+    if (argc > 6)
+        STRDUP_OR_FAIL(dbi->tenant_id, argv[6]);
 
     result = db_connect(dbi);
     if (result != ISC_R_SUCCESS)
@@ -431,6 +464,10 @@ static void mysqldb_destroy(const char *zone, void *driverdata, void **dbdata)
         isc_mem_free(ns_g_mctx, dbi->user);
     if (dbi->passwd != NULL)
         isc_mem_free(ns_g_mctx, dbi->passwd);
+    if (dbi->domain_id != NULL)
+        isc_mem_free(ns_g_mctx, dbi->domain_id);
+    if (dbi->tenant_id != NULL)
+        isc_mem_free(ns_g_mctx, dbi->tenant_id);
     if (dbi->database != NULL)
         isc_mem_free(ns_g_mctx, dbi->database);
     isc_mem_put(ns_g_mctx, dbi, sizeof(struct dbinfo));
