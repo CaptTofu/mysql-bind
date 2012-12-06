@@ -37,6 +37,7 @@
 #include <dns/result.h>
 
 #include <named/globals.h>
+#include <named/log.h>
 
 /* #include <named/mysqldb.h> */
 #include "include/mysqldb.h"
@@ -220,12 +221,82 @@ static int  d_ex(char *search, char *domain)
 static isc_result_t mysqldb_lookup(const char *zone, const char *name, void *dbdata,
 	                           dns_sdblookup_t *lookup)
 {
-    isc_result_t result;
-    struct dbinfo *dbi = dbdata;
+    #define TYPE_LENGTH 16
+    #define DATA_LENGTH 255
+   
+    /* TODO: this could go in a conf file */
+    const char *db_lookup_query = "SELECT ttl, type, data FROM %s WHERE tenant_id = ? AND \
+domain_id = ? AND name = UPPER(?)";
+    char db_clean_query[1500];
+    //char *canonname;
+
+    dns_ttl_t ttl;
+    char type[TYPE_LENGTH];
+    char data[DATA_LENGTH];
+    int result_count = 0;
+    unsigned long param_lengths[3], result_lengths[3];
+
     MYSQL_RES *res = 0;
     MYSQL_ROW row;
-    char str[1500];
-    //char *canonname;
+    MYSQL_STMT *stmt;
+    MYSQL_BIND params[3], results[3];
+
+    isc_result_t result;
+    struct dbinfo *dbi = dbdata;
+
+    memset(params, 0, sizeof (params)); /* zero the structures */
+    memset(results, 0, sizeof (results)); /* zero the structures */
+
+#ifdef DEBUG
+	isc_log_write(ns_g_lctx, NS_LOGCATEGORY_GENERAL,
+			      NS_LOGMODULE_MAIN, ISC_LOG_CRITICAL,
+			      "Arguments: tenant_id: %s domain_id: %s name: %s",
+                  dbi->tenant_id,
+                  dbi->domain_id,
+                  name);
+#endif
+
+    param_lengths[0] = strlen(dbi->tenant_id);
+    param_lengths[1] = strlen(dbi->domain_id);
+    param_lengths[2] = strlen(name);
+
+    /* parameter buffer structs */
+    params[0].buffer_type    = MYSQL_TYPE_STRING;
+    params[0].buffer         = dbi->tenant_id;
+    params[0].buffer_length  = param_lengths[0]; 
+    params[0].is_null        = 0;
+    params[0].length         = &param_lengths[0]; 
+
+    params[1].buffer_type    = MYSQL_TYPE_STRING;
+    params[1].buffer         = dbi->domain_id;
+    params[1].buffer_length  = param_lengths[1]; 
+    params[1].is_null        = 0;
+    params[1].length         = &param_lengths[1]; 
+
+    params[2].buffer_type    = MYSQL_TYPE_STRING;
+    params[2].buffer         = name;
+    params[2].buffer_length  = param_lengths[2]; 
+    params[2].is_null        = 0;
+    params[2].length         = &param_lengths[2]; 
+
+    /* result buffer structs */
+    results[0].buffer_type    = MYSQL_TYPE_LONG;
+    results[0].buffer         = (char *) &ttl; 
+    results[0].is_unsigned    = 1;
+    results[0].is_null        = 0;
+    results[0].length         = &result_lengths[0]; 
+
+    results[1].buffer_type    = MYSQL_TYPE_STRING;
+    results[1].buffer         = (char *) type; 
+    results[1].buffer_length  = TYPE_LENGTH; 
+    results[1].is_null        = 0;
+    results[1].length         = &result_lengths[1]; 
+
+    results[2].buffer_type    = MYSQL_TYPE_STRING;
+    results[2].buffer         = (char *) data; 
+    results[2].buffer_length  = DATA_LENGTH; 
+    results[2].is_null        = 0;
+    results[2].length         = &result_lengths[2]; 
 
     UNUSED(zone);
 
@@ -233,80 +304,93 @@ static isc_result_t mysqldb_lookup(const char *zone, const char *name, void *dbd
     //if (canonname == NULL)
     	//return (ISC_R_NOMEMORY);
     //quotestring(name, canonname);
-    snprintf(str, sizeof(str),
-             "SELECT ttl, type, data FROM %s WHERE tenant_id = '%s' AND domain_id = '%s' AND name = UPPER('%s') ",
-             dbi->table,
-             dbi->tenant_id,
-             dbi->domain_id,
-             name);
-    //isc_mem_put(ns_g_mctx, canonname, strlen(name) * 2 + 1);
+    snprintf(db_clean_query, sizeof(db_clean_query), db_lookup_query, dbi->table);
 
     result = maybe_reconnect(dbi);
+
+	isc_log_write(ns_g_lctx, NS_LOGCATEGORY_GENERAL,
+			      NS_LOGMODULE_MAIN, ISC_LOG_CRITICAL,
+			      "connected to the mysql://%s:<password>@%s/%s",
+                  dbi->user,
+                  dbi->host,
+                  dbi->database);
+
     if (result != ISC_R_SUCCESS)
-            return (result);
+        return (result);
 
-    if( mysql_query(&dbi->conn, str) != 0 )
+    //isc_mem_put(ns_g_mctx, canonname, strlen(name) * 2 + 1);
+
+    stmt = mysql_stmt_init(&dbi->conn);
+
+    if (!stmt)
     {
-            return (ISC_R_FAILURE);
+	    isc_log_write(ns_g_lctx, NS_LOGCATEGORY_GENERAL,
+			      NS_LOGMODULE_MAIN, ISC_LOG_CRITICAL,
+			      "Failure! Unable to initialize prepared statement handle");
+        return (ISC_R_FAILURE);
     }
-    res = mysql_store_result(&dbi->conn);
-
-    if (mysql_num_rows(res) == 0)
+    if (mysql_stmt_prepare(stmt, db_clean_query, strlen(db_clean_query)) != 0)
     {
-            char domain[255];
-            char non_cons_name[255];
-
-            strcpy(non_cons_name,name);
-
-            if(d_ex(non_cons_name,domain) != 0) {
-                    return (ISC_R_FAILURE);
-            }
-
-            mysql_free_result(res);
-
-            snprintf(str, sizeof(str),
-                     "SELECT ttl, type, data FROM %s WHERE tenant_id = '%s' AND domain_id = '%s' AND name = UPPER('*.%s')",
-                     dbi->table,
-                     dbi->tenant_id,
-                     dbi->domain_id,
-                     domain);
-
-            result = maybe_reconnect(dbi);
-            if (result != ISC_R_SUCCESS)
-                    return (result);
-
-            if( mysql_query(&dbi->conn, str) != 0 )
-            {
-                    return (ISC_R_FAILURE);
-            }
-            res = mysql_store_result(&dbi->conn);
-
-            if (mysql_num_rows(res) == 0)
-            {
-                    mysql_free_result(res);
-                    return (ISC_R_NOTFOUND);
-            }
+	    isc_log_write(ns_g_lctx, NS_LOGCATEGORY_GENERAL,
+			      NS_LOGMODULE_MAIN, ISC_LOG_CRITICAL,
+			      "ERROR: Unable to prepare statement: %s",
+                  db_clean_query);
+        return (ISC_R_FAILURE);
+    } 
+    if (mysql_stmt_bind_param(stmt, params) != 0)
+    {
+	    isc_log_write(ns_g_lctx, NS_LOGCATEGORY_GENERAL,
+			      NS_LOGMODULE_MAIN, ISC_LOG_CRITICAL,
+			      "ERROR: Unable to bind input params");
+        return (ISC_R_FAILURE);
+    } 
+    if (mysql_stmt_execute(stmt) != 0)
+    {
+	    isc_log_write(ns_g_lctx, NS_LOGCATEGORY_GENERAL,
+	              NS_LOGMODULE_MAIN, ISC_LOG_CRITICAL,
+			      "ERROR: Unable to execute statement!");
+        return (ISC_R_FAILURE);
     }
-    while ((row = mysql_fetch_row(res)))
+
+    if (mysql_stmt_bind_result(stmt, results) != 0)
     {
-        	char *ttlstr = row[0];
-	     	char *type   = row[1];
-	     	char *data   = row[2];
-	    	dns_ttl_t ttl;
-	     	char *endp;
-	     	ttl = strtol(ttlstr, &endp, 10);
-	     	if (*endp != '\0')
-        	{
-	             mysql_free_result(res);
-        	     return (DNS_R_BADTTL);
-	     	}
-     		result = dns_sdb_putrr(lookup, type, ttl, data);
-	    	if (result != ISC_R_SUCCESS) {
-        	     mysql_free_result(res);
-	             return (ISC_R_FAILURE);
-     		}
+	    isc_log_write(ns_g_lctx, NS_LOGCATEGORY_GENERAL,
+	              NS_LOGMODULE_MAIN, ISC_LOG_CRITICAL,
+			      "ERROR: Unable to bind result!");
+        return (ISC_R_FAILURE);
+    } 
+    if (mysql_stmt_store_result(stmt) != 0)
+    {
+        return (ISC_R_FAILURE);
+    }
+    result_count = mysql_stmt_num_rows(stmt); 
+    if (result_count == 0)
+    {
+	    isc_log_write(ns_g_lctx, NS_LOGCATEGORY_GENERAL,
+	              NS_LOGMODULE_MAIN, ISC_LOG_CRITICAL,
+			      "no result(s)");
+        mysql_stmt_free_result(stmt);
+        return (ISC_R_NOTFOUND);
+    }
+
+    while (! mysql_stmt_fetch(stmt))
+    {
+#ifdef DEBUG
+        isc_log_write(ns_g_lctx, NS_LOGCATEGORY_GENERAL,
+	              NS_LOGMODULE_MAIN, ISC_LOG_CRITICAL,
+			      "type: %s ttl: %d data: %s", type, ttl, data);
+#endif
+     	result = dns_sdb_putrr(lookup, type, ttl, data);
+	    if (result != ISC_R_SUCCESS) {
+            isc_log_write(ns_g_lctx, NS_LOGCATEGORY_GENERAL,
+	              NS_LOGMODULE_MAIN, ISC_LOG_CRITICAL,
+                  "ERROR: unable to set RR result for bind");
+            mysql_stmt_free_result(stmt);
+	        return (ISC_R_FAILURE);
+     	}
 	}
-	mysql_free_result(res);
+    mysql_stmt_free_result(stmt);
+    mysql_stmt_close(stmt);
 	return (ISC_R_SUCCESS);
 }
 
