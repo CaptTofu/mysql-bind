@@ -39,7 +39,6 @@
 #include <named/globals.h>
 #include <named/log.h>
 
-/* #include <named/mysqldb.h> */
 #include "include/mysqldb.h"
 
 /*
@@ -224,11 +223,11 @@ static isc_result_t mysqldb_lookup(const char *zone, const char *name, void *dbd
     #define TYPE_LENGTH 16
     #define DATA_LENGTH 255
    
-    /* TODO: this could go in a conf file */
+    /* TODO: this should go in a conf file */
     const char *db_lookup_query = "SELECT ttl, type, data FROM %s WHERE tenant_id = ? AND \
 domain_id = ? AND name = UPPER(?)";
     char db_clean_query[1500];
-    //char *canonname;
+    char *canonname;
 
     dns_ttl_t ttl;
     char type[TYPE_LENGTH];
@@ -242,23 +241,29 @@ domain_id = ? AND name = UPPER(?)";
     MYSQL_BIND params[3], results[3];
 
     isc_result_t result;
+
     struct dbinfo *dbi = dbdata;
+
+	canonname = isc_mem_get(ns_g_mctx, strlen(name) * 2 + 1);
+	if (canonname == NULL)
+		return (ISC_R_NOMEMORY);
+	quotestring(name, canonname);
 
     memset(params, 0, sizeof (params)); /* zero the structures */
     memset(results, 0, sizeof (results)); /* zero the structures */
 
-#ifdef DEBUG
+#ifdef MYSQLDB_DEBUG
 	isc_log_write(ns_g_lctx, NS_LOGCATEGORY_GENERAL,
 			      NS_LOGMODULE_MAIN, ISC_LOG_CRITICAL,
-			      "Arguments: tenant_id: %s domain_id: %s name: %s",
+			      "Arguments: tenant_id: %s domain_id: %s cananname: %s",
                   dbi->tenant_id,
                   dbi->domain_id,
-                  name);
+                  canonname);
 #endif
 
     param_lengths[0] = strlen(dbi->tenant_id);
     param_lengths[1] = strlen(dbi->domain_id);
-    param_lengths[2] = strlen(name);
+    param_lengths[2] = strlen(canonname);
 
     /* parameter buffer structs */
     params[0].buffer_type    = MYSQL_TYPE_STRING;
@@ -274,7 +279,7 @@ domain_id = ? AND name = UPPER(?)";
     params[1].length         = &param_lengths[1]; 
 
     params[2].buffer_type    = MYSQL_TYPE_STRING;
-    params[2].buffer         = name;
+    params[2].buffer         = canonname;
     params[2].buffer_length  = param_lengths[2]; 
     params[2].is_null        = 0;
     params[2].length         = &param_lengths[2]; 
@@ -300,25 +305,31 @@ domain_id = ? AND name = UPPER(?)";
 
     UNUSED(zone);
 
-    //canonname = isc_mem_get(ns_g_mctx, strlen(name) * 2 + 1);
-    //if (canonname == NULL)
-    	//return (ISC_R_NOMEMORY);
-    //quotestring(name, canonname);
     snprintf(db_clean_query, sizeof(db_clean_query), db_lookup_query, dbi->table);
 
     result = maybe_reconnect(dbi);
 
+    if (result != ISC_R_SUCCESS)
+    {
+	    isc_log_write(ns_g_lctx, NS_LOGCATEGORY_GENERAL,
+			      NS_LOGMODULE_MAIN, ISC_LOG_CRITICAL,
+			      "ERROR: (%d):%s - unable to (re)connect to the mysql://%s:<password>@%s/%s",
+                  mysql_stmt_errno(stmt),
+                  mysql_stmt_error(stmt),
+                  dbi->user,
+                  dbi->host,
+                  dbi->database);
+        return (result);
+    }
+
+#ifdef MYSQLDB_DEBUG
 	isc_log_write(ns_g_lctx, NS_LOGCATEGORY_GENERAL,
 			      NS_LOGMODULE_MAIN, ISC_LOG_CRITICAL,
 			      "connected to the mysql://%s:<password>@%s/%s",
                   dbi->user,
                   dbi->host,
                   dbi->database);
-
-    if (result != ISC_R_SUCCESS)
-        return (result);
-
-    //isc_mem_put(ns_g_mctx, canonname, strlen(name) * 2 + 1);
+#endif
 
     stmt = mysql_stmt_init(&dbi->conn);
 
@@ -375,7 +386,7 @@ domain_id = ? AND name = UPPER(?)";
 
     while (! mysql_stmt_fetch(stmt))
     {
-#ifdef DEBUG
+#ifdef MYSQLDB_DEBUG
         isc_log_write(ns_g_lctx, NS_LOGCATEGORY_GENERAL,
 	              NS_LOGMODULE_MAIN, ISC_LOG_CRITICAL,
 			      "type: %s ttl: %d data: %s", type, ttl, data);
