@@ -1,0 +1,7 @@
+# this is an example of a zone file that uses mysql-bind as a record source
+# TODO: move user/password to singe file
+# the fields you see are:
+#  zone "zone name" {type master; notify no;  database "db_driver schema_name table_name host user password domain_id tenant_id"
+zone "example1.com" { type master; notify no; database "mysqldb dns dns_domains localhost dns xxx a98bc2dc-9514-4a86-baef-343c4433f674 eafaf076eeb14121a0567dacd75a275b"; };
+zone "example2.com" { type master; notify no; database "mysqldb dns dns_domains localhost dns xxx b5f231e8-2247-4044-885b-27555c9fbaf0 2e4c31a4e6ae4e7cb51e32a11233b9f5"; };
+zone "example3.com" { type master; notify no; database "mysqldb dns dns_domains localhost dns xxx ca696ef0-d1cc-463b-8db0-9f6046b30395 2e4c31a4e6ae4e7cb51e32a11233b9f5"; };

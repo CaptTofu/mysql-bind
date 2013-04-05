@@ -23,13 +23,15 @@ make install
 
 You should read the README file with the BIND distribution for more options to pass to configure. You may also want to read the document sdb in the bind doc/misc/ directory.
 
-ENTRY IN NAMED.CONF
-===================
+Note: with this latest version of mysql-bind, I have added domain_id and tenant_id. This is to facilitate a means for domains to be owned by some manner of user. This works out of the box with Moniker, but you can use the same scheme. tenant_id can be any unique character per user, domain_id can be unique per domain.
+
+EXAMPLE ENTRY IN NAMED.CONF
+===========================
 
 zone "mydomain.com" {
   type master;
   notify no;
-  database "mysqldb dbname tablename hostname user password";
+  database "mysqldb dbname dns_domains hostname user password domain_id tenant_id";
 };
 
 In the first line, change the zone to match your domain. In the database line, dbname is the name of the MySQL database, tablename is the name of the table for this domain/zone, hostname is the name of the database host, user and password are for access to the database.
@@ -37,29 +39,11 @@ In the first line, change the zone to match your domain. In the database line, d
 DATABASE SCHEMA
 ===============
 
-You should create a database for the driver and add one table for each domain. The following SQL will create a table for one domain. Change mydomain to something that will represent the domain more clearly.
+You should create a database for the driver and create the table for the domains you wish to serve. The SQL file in sql/dns_domains_create.sql will create this table named as "dns_domains", though the name is arbitrary. Note: originally, there was a table for each zone, but this would scale poorly with MySQL and a better design pattern is to use a single table albeit with partitions. 
 
-CREATE TABLE mydomain (
-  name varchar(255) default NULL,
-  ttl int(11) default NULL,
-  rdtype varchar(255) default NULL,
-  rdata varchar(255) default NULL
-) TYPE=MyISAM;
+
 
 EXAMPLE DATABASE DATA
 =====================
 
-The following is an SQL dump of an example table for a domain. The entries should be familiar to anyone who is familiar with BIND zone files. Change it to match your domain.
-
-INSERT INTO mydomain VALUES ('mydomain.com', 259200, 'SOA', 'mydomain.com. www.mydomain.com. 200309181 28800 7200 86400 28800');
-INSERT INTO mydomain VALUES ('mydomain.com', 259200, 'NS', 'ns0.mydomain.com.');
-INSERT INTO mydomain VALUES ('mydomain.com', 259200, 'NS', 'ns1.mydomain.com.');
-INSERT INTO mydomain VALUES ('mydomain.com', 259200, 'MX', '10 mail.mydomain.com.');
-INSERT INTO mydomain VALUES ('w0.mydomain.com', 259200, 'A', '192.168.1.1');
-INSERT INTO mydomain VALUES ('w1.mydomain.com', 259200, 'A', '192.168.1.2');
-INSERT INTO mydomain VALUES ('mydomain.com', 259200, 'Cname', 'w0.mydomain.com.');
-INSERT INTO mydomain VALUES ('mail.mydomain.com', 259200, 'Cname', 'w0.mydomain.com.');
-INSERT INTO mydomain VALUES ('ns0.mydomain.com', 259200, 'Cname', 'w0.mydomain.com.');
-INSERT INTO mydomain VALUES ('ns1.mydomain.com', 259200, 'Cname', 'w1.mydomain.com.');
-INSERT INTO mydomain VALUES ('www.mydomain.com', 259200, 'Cname', 'w0.mydomain.com.');
-INSERT INTO mydomain VALUES ('ftp.mydomain.com', 259200, 'Cname', 'w0.mydomain.com.');
+The file sql/dns_domains_data.sql create test data you can use to familiarize yourself with the setup.
